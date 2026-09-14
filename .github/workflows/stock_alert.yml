@@ -1,0 +1,45 @@
+name: 台股到價提醒
+
+on:
+  schedule:
+    # 台股盤中時間約 09:00-13:30（台灣時間），對應 UTC 為 01:00-05:30
+    # 每 5 分鐘跑一次；GitHub Actions 的排程時間非絕對精準，可能有幾分鐘誤差
+    - cron: "*/5 1-5 * * 1-5"
+  workflow_dispatch: {}   # 允許手動點擊執行，方便測試
+
+permissions:
+  contents: write   # 需要這個權限才能把 state.json 的更新 commit 回 repo
+
+jobs:
+  check-price:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 簽出程式碼
+        uses: actions/checkout@v4
+
+      - name: 設定 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 執行股價檢查
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          STOCK_CODE: ${{ secrets.STOCK_CODE }}
+          STOCK_MARKET: ${{ secrets.STOCK_MARKET }}
+          TARGET_PRICE: ${{ secrets.TARGET_PRICE }}
+          DIRECTION: ${{ secrets.DIRECTION }}
+        run: python stock_alert.py
+
+      - name: 儲存通知狀態
+        run: |
+          git config user.name "stock-alert-bot"
+          git config user.email "actions@github.com"
+          if [ -n "$(git status --porcelain state.json)" ]; then
+            git add state.json
+            git commit -m "更新通知狀態"
+            git push
+          else
+            echo "狀態無變化，不需要 commit。"
+          fi
