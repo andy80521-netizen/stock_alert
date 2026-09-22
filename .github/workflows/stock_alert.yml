@@ -1,11 +1,7 @@
 name: 台股到價提醒
 
 on:
-  schedule:
-    # 台股盤中時間約 09:00-13:30（台灣時間），對應 UTC 為 01:00-05:30
-    # 每 5 分鐘跑一次；GitHub Actions 的排程時間非絕對精準，可能有幾分鐘誤差
-    - cron: "*/5 1-5 * * 1-5"
-  workflow_dispatch: {}   # 允許手動點擊執行，方便測試
+  workflow_dispatch: {}   # 允許手動觸發，也讓外部排程服務(cron-job.org)透過 API 呼叫這個事件來觸發執行
 
 permissions:
   contents: write   # 需要這個權限才能把 state.json 的更新 commit 回 repo
