@@ -1,33 +1,33 @@
 """
-台股雙向到價提醒 -> Telegram 通知
+多股票雙向到價提醒 -> Telegram 通知（股票清單改由 Google 試算表提供）
 
-行為：
-- 股價漲到 TARGET_PRICE_ABOVE 以上 -> 通知（持續通知，直到確認）
-- 股價跌到 TARGET_PRICE_BELOW 以下 -> 通知（持續通知，直到確認）
-- 兩個方向各自獨立追蹤，其中一個確認了不影響另一個
-- 在 Telegram 回覆「<股票代號> 謝謝」（例如「00712 謝謝」）即可把「目前正在響的那個(些)方向」都標記為已確認，停止通知
-  之後如果價格從已確認的區間又反向穿越回來，會重新開始通知（見下方邏輯說明）
+股票清單來源：一份「發布到網路」的 Google 試算表（CSV 格式連結）。
+不懂程式的人只要打開這份試算表、像填 Excel 一樣輸入資料即可，
+不需要碰任何程式碼或 GitHub。
+
+試算表欄位順序（固定 4 欄，順序不能亂，第一列是標題列會被自動跳過）：
+  A欄：股票代號       例如 00712
+  B欄：市場           tse（上市）或 otc（上櫃），留空預設 tse
+  C欄：漲到目標價      例如 9，不需要這個方向就留空
+  D欄：跌到目標價      例如 7.9，不需要這個方向就留空
 
 環境變數（GitHub Actions Secrets）：
-  BOT_TOKEN            - Telegram Bot Token
-  CHAT_ID              - Telegram Chat ID
-  STOCK_CODE           - 股票代號，例如 00712
-  STOCK_MARKET         - "tse"（上市）或 "otc"（上櫃），預設 tse
-  TARGET_PRICE_ABOVE   - 漲到這個價位通知，例如 9（留空或不設定 = 不監控這個方向）
-  TARGET_PRICE_BELOW   - 跌到這個價位通知，例如 7.9（留空或不設定 = 不監控這個方向）
+  BOT_TOKEN       - Telegram Bot Token
+  CHAT_ID         - Telegram Chat ID
+  STOCKS_CSV_URL  - Google 試算表發布後的 CSV 連結
 
-state.json 範例：
-{
-  "last_update_id": 123456,
-  "acknowledged_above": false,
-  "acknowledged_below": false
-}
+行為：
+- 每支股票的「漲到」「跌到」各自獨立追蹤達標與確認狀態
+- 達標後每次執行都會持續通知，直到你回覆「<該股票代號> 謝謝」
+- 確認後如果價格回到目標區間內，該方向會自動重置，之後再次達標會重新通知
 """
 
 import os
 import json
 import re
 import sys
+import csv
+import io
 import urllib.request
 
 STATE_FILE = "state.json"
@@ -41,10 +41,40 @@ def get_env(name, default=None, required=True):
     return val
 
 
-def get_optional_float(name):
-    val = os.environ.get(name, "")
-    val = val.strip() if val else ""
-    return float(val) if val else None
+def load_stocks(csv_url: str) -> list:
+    req = urllib.request.Request(csv_url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        raw = resp.read().decode("utf-8-sig")  # utf-8-sig 處理 Google 試算表常見的 BOM
+
+    reader = csv.reader(io.StringIO(raw))
+    rows = list(reader)
+    if not rows:
+        return []
+
+    stocks = []
+    for row in rows[1:]:  # 第一列是標題，跳過
+        if not row or not row[0].strip():
+            continue
+        code = row[0].strip()
+        market = (row[1].strip().lower() if len(row) > 1 and row[1].strip() else "tse")
+        above_raw = row[2].strip() if len(row) > 2 else ""
+        below_raw = row[3].strip() if len(row) > 3 else ""
+
+        try:
+            above = float(above_raw) if above_raw else None
+        except ValueError:
+            print(f"{code}：漲到目標價「{above_raw}」不是有效數字，略過這個方向。")
+            above = None
+
+        try:
+            below = float(below_raw) if below_raw else None
+        except ValueError:
+            print(f"{code}：跌到目標價「{below_raw}」不是有效數字，略過這個方向。")
+            below = None
+
+        stocks.append({"code": code, "market": market, "above": above, "below": below})
+
+    return stocks
 
 
 def fetch_price(stock_code: str, market: str):
@@ -103,7 +133,7 @@ def load_state() -> dict:
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    return {"last_update_id": 0, "acknowledged_above": False, "acknowledged_below": False}
+    return {"last_update_id": 0, "stocks": {}}
 
 
 def save_state(state: dict):
@@ -114,73 +144,78 @@ def save_state(state: dict):
 def main():
     bot_token = get_env("BOT_TOKEN")
     chat_id = get_env("CHAT_ID")
-    stock_code = get_env("STOCK_CODE")
-    market = get_env("STOCK_MARKET", default="tse", required=False) or "tse"
-    target_above = get_optional_float("TARGET_PRICE_ABOVE")
-    target_below = get_optional_float("TARGET_PRICE_BELOW")
+    csv_url = get_env("STOCKS_CSV_URL")
 
-    if target_above is None and target_below is None:
-        print("TARGET_PRICE_ABOVE 和 TARGET_PRICE_BELOW 至少要設定一個。")
-        sys.exit(1)
+    stocks = load_stocks(csv_url)
+    if not stocks:
+        print("試算表目前沒有任何股票資料，結束。")
+        return
 
     state = load_state()
-    state.setdefault("acknowledged_above", False)
-    state.setdefault("acknowledged_below", False)
+    state.setdefault("stocks", {})
 
-    # 檢查有沒有新的確認回覆訊息
     updates = fetch_telegram_updates(bot_token, state.get("last_update_id", 0))
-    acked_now = False
     for update in updates:
         state["last_update_id"] = max(state.get("last_update_id", 0), update["update_id"])
-        msg = update.get("message", {})
-        text = msg.get("text", "")
-        if is_ack_message(text, stock_code):
-            state["acknowledged_above"] = True
-            state["acknowledged_below"] = True
-            acked_now = True
-    if acked_now:
-        print("收到確認訊息，兩個方向的通知都已標記為確認。")
+        text = update.get("message", {}).get("text", "")
+        for s in stocks:
+            if is_ack_message(text, s["code"]):
+                st = state["stocks"].setdefault(
+                    s["code"], {"acknowledged_above": False, "acknowledged_below": False}
+                )
+                st["acknowledged_above"] = True
+                st["acknowledged_below"] = True
+                print(f"收到 {s['code']} 的確認訊息，該股票兩方向皆已標記確認。")
 
-    price, name = fetch_price(stock_code, market)
-    print(f"目前 {name}({stock_code}) 股價：{price}")
-    if target_above is not None:
-        print(f"  漲到目標：{target_above}")
-    if target_below is not None:
-        print(f"  跌到目標：{target_below}")
+    for s in stocks:
+        code = s["code"]
+        market = s["market"]
+        target_above = s["above"]
+        target_below = s["below"]
 
-    hit_above = target_above is not None and price >= target_above
-    hit_below = target_below is not None and price <= target_below
+        if target_above is None and target_below is None:
+            print(f"{code} 沒有設定任何目標價，略過。")
+            continue
 
-    # 價格若已經回到目標區間之外，重置該方向的確認狀態，讓下次再次達標時能重新通知
-    if target_above is not None and price < target_above:
-        state["acknowledged_above"] = False
-    if target_below is not None and price > target_below:
-        state["acknowledged_below"] = False
-
-    notified = False
-
-    if hit_above and not state["acknowledged_above"]:
-        msg = (
-            f"📈 {name}({stock_code}) 已漲到 {price} 元\n"
-            f"目標價（漲）：{target_above}\n\n"
-            f"回覆「{stock_code} 謝謝」即可停止此提醒"
+        st = state["stocks"].setdefault(
+            code, {"acknowledged_above": False, "acknowledged_below": False}
         )
-        send_telegram(bot_token, chat_id, msg)
-        notified = True
-        print("已發送「漲到」通知。")
 
-    if hit_below and not state["acknowledged_below"]:
-        msg = (
-            f"📉 {name}({stock_code}) 已跌到 {price} 元\n"
-            f"目標價（跌）：{target_below}\n\n"
-            f"回覆「{stock_code} 謝謝」即可停止此提醒"
-        )
-        send_telegram(bot_token, chat_id, msg)
-        notified = True
-        print("已發送「跌到」通知。")
+        try:
+            price, name = fetch_price(code, market)
+        except Exception as e:
+            print(f"{code} 抓取股價失敗：{e}")
+            continue
 
-    if not notified:
-        print("尚未達標，或已確認過，不通知。")
+        print(f"目前 {name}({code}) 股價：{price}"
+              f"{'，漲到目標：' + str(target_above) if target_above is not None else ''}"
+              f"{'，跌到目標：' + str(target_below) if target_below is not None else ''}")
+
+        hit_above = target_above is not None and price >= target_above
+        hit_below = target_below is not None and price <= target_below
+
+        if target_above is not None and price < target_above:
+            st["acknowledged_above"] = False
+        if target_below is not None and price > target_below:
+            st["acknowledged_below"] = False
+
+        if hit_above and not st["acknowledged_above"]:
+            msg = (
+                f"📈 {name}({code}) 已漲到 {price} 元\n"
+                f"目標價（漲）：{target_above}\n\n"
+                f"回覆「{code} 謝謝」即可停止此提醒"
+            )
+            send_telegram(bot_token, chat_id, msg)
+            print(f"{code}：已發送「漲到」通知。")
+
+        if hit_below and not st["acknowledged_below"]:
+            msg = (
+                f"📉 {name}({code}) 已跌到 {price} 元\n"
+                f"目標價（跌）：{target_below}\n\n"
+                f"回覆「{code} 謝謝」即可停止此提醒"
+            )
+            send_telegram(bot_token, chat_id, msg)
+            print(f"{code}：已發送「跌到」通知。")
 
     save_state(state)
 
