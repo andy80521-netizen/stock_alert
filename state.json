@@ -1,4 +1,10 @@
 {
   "last_update_id": 73187570,
-  "acknowledged": false
+  "acknowledged": false,
+  "stocks": {
+    "00712": {
+      "acknowledged_above": false,
+      "acknowledged_below": false
+    }
+  }
 }
