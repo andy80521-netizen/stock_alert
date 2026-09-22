@@ -22,10 +22,7 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          STOCK_CODE: ${{ secrets.STOCK_CODE }}
-          STOCK_MARKET: ${{ secrets.STOCK_MARKET }}
-          TARGET_PRICE: ${{ secrets.TARGET_PRICE }}
-          DIRECTION: ${{ secrets.DIRECTION }}
+          STOCKS_CSV_URL: ${{ secrets.STOCKS_CSV_URL }}
         run: python stock_alert.py
 
       - name: 儲存通知狀態
