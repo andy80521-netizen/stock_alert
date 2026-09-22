@@ -257,6 +257,19 @@ def resolve_ticker_and_fetch(raw_code: str):
     return None, None
 
 
+def fibonacci_extension(swing_high: float, swing_low: float) -> dict:
+    diff = swing_high - swing_low
+    return {
+        "127.2%延伸": round(swing_high + diff * 0.272, 2),
+        "161.8%延伸": round(swing_high + diff * 0.618, 2),
+    }
+
+
+def daily_volatility(close, window=60):
+    log_ret = np.log(close / close.shift(1)).dropna()
+    return float(log_ret.rolling(window).std().iloc[-1])
+
+
 def build_analysis_report(raw_code: str) -> str:
     if yf is None:
         return "分析功能目前無法使用（缺少 yfinance 套件），請聯絡管理者確認 workflow 設定。"
@@ -270,10 +283,13 @@ def build_analysis_report(raw_code: str) -> str:
     ma60 = close.rolling(60).mean().iloc[-1]
     rsi = compute_rsi(close).iloc[-1]
     _, bb_upper, bb_lower = compute_bollinger(close)
+    bb_upper_val, bb_lower_val = float(bb_upper.iloc[-1]), float(bb_lower.iloc[-1])
 
     lookback = min(252, len(close))
     recent = close.iloc[-lookback:]
     swing_high, swing_low = float(recent.max()), float(recent.min())
+    fib_ext = fibonacci_extension(swing_high, swing_low)
+    vol = daily_volatility(close)
 
     clusters = find_price_clusters(close, top_n=8)
     scored = []
@@ -289,11 +305,12 @@ def build_analysis_report(raw_code: str) -> str:
         f"現價：{current_price:.2f}",
         f"MA20：{ma20:.2f}｜MA60：{ma60:.2f}",
         f"RSI(14)：{rsi:.1f}" + ("（超買）" if rsi > 70 else "（超賣）" if rsi < 30 else "（中性）"),
-        f"布林通道：上{bb_upper.iloc[-1]:.2f}／下{bb_lower.iloc[-1]:.2f}",
+        f"布林通道：上{bb_upper_val:.2f}／下{bb_lower_val:.2f}",
         f"近一年高低：{swing_high:.2f} / {swing_low:.2f}",
         "",
         "可能支撐（歷史回測10日後表現）：",
     ]
+
     if supports:
         for level, touches, stat in supports:
             if stat and stat["n"] >= 3:
@@ -301,7 +318,7 @@ def build_analysis_report(raw_code: str) -> str:
             else:
                 lines.append(f"  {level}：樣本太少，僅供參考")
     else:
-        lines.append("  （無明顯資料）")
+        lines.append("  （股價目前處於歷史相對低位，無過去資料可回測，見下方技術推算）")
 
     lines.append("")
     lines.append("可能壓力（歷史回測10日後表現）：")
@@ -312,10 +329,46 @@ def build_analysis_report(raw_code: str) -> str:
             else:
                 lines.append(f"  {level}：樣本太少，僅供參考")
     else:
-        lines.append("  （無明顯資料）")
+        lines.append("  （股價創近一年新高，無過去資料可回測，見下方技術推算）")
+
+    # 決定最終要呈現的「賣出參考」跟「買進/加碼參考」，優先用有效的歷史回測，沒有才退而求其次用技術推算
+    sell_ref, sell_basis = None, ""
+    for level, touches, stat in resistances:
+        if stat and stat["n"] >= 5 and stat["win_rate"] < 50:
+            sell_ref, sell_basis = level, f"歷史統計（上漲機率僅{stat['win_rate']}%，較易遇壓）"
+            break
+    if sell_ref is None:
+        if bb_upper_val > current_price:
+            sell_ref, sell_basis = round(bb_upper_val, 2), "布林通道上軌（技術推算，非歷史驗證）"
+        else:
+            sell_ref, sell_basis = fib_ext["127.2%延伸"], "費波那契延伸位（技術推算，非歷史驗證，股價已站上布林上軌）"
+
+    buy_ref, buy_basis = None, ""
+    for level, touches, stat in supports:
+        if stat and stat["n"] >= 5 and stat["win_rate"] >= 50:
+            buy_ref, buy_basis = level, f"歷史統計（上漲機率{stat['win_rate']}%）"
+            break
+    if buy_ref is None:
+        if bb_lower_val < current_price:
+            buy_ref, buy_basis = round(bb_lower_val, 2), "布林通道下軌（技術推算，非歷史驗證）"
+        else:
+            buy_ref, buy_basis = round(swing_low, 2), "近一年低點（技術推算，非歷史驗證）"
 
     lines.append("")
-    lines.append("⚠️ 僅為歷史統計，不構成投資建議，不保證未來重演。")
+    lines.append("🎯 建議關注價位（單一參考值，供快速判斷）：")
+    lines.append(f"  潛在賣出參考：{sell_ref}")
+    lines.append(f"    依據：{sell_basis}")
+    lines.append(f"  潛在買進/加碼參考：{buy_ref}")
+    lines.append(f"    依據：{buy_basis}")
+
+    lines.append("")
+    lines.append(f"補充：以目前波動度推算，未來10個交易日統計上約68%機率落在"
+                 f"{current_price * np.exp(-vol * (10 ** 0.5)):.2f} ~ "
+                 f"{current_price * np.exp(vol * (10 ** 0.5)):.2f} 區間內（常態分布±1個標準差估算）")
+
+    lines.append("")
+    lines.append("⚠️ 僅為歷史統計與技術推算，不構成投資建議，不保證未來重演。"
+                  "「技術推算」代表沒有足夠歷史資料驗證，純粹用數學公式估計，可信度低於有回測驗證的價位。")
 
     return "\n".join(lines)
 
