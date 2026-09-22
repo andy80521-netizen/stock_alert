@@ -18,6 +18,9 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: 安裝套件
+        run: pip install yfinance pandas numpy
+
       - name: 執行股價檢查
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
