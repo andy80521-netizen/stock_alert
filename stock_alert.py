@@ -381,6 +381,66 @@ def taiwan_today_str() -> str:
     return datetime.now(TW_TZ).strftime("%Y-%m-%d")
 
 
+def is_market_hours() -> bool:
+    """
+    台股交易時間：平日（週一至週五）09:00 - 13:30（台灣時間），
+    且當天不是證交所公告的休市日（國定假日、調整放假等）。
+    """
+    now = datetime.now(TW_TZ)
+    if now.weekday() >= 5:  # 5=Saturday, 6=Sunday
+        return False
+    market_open = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    market_close = now.replace(hour=13, minute=30, second=0, microsecond=0)
+    if not (market_open <= now <= market_close):
+        return False
+    if is_twse_holiday_today():
+        return False
+    return True
+
+
+_holiday_cache = {}
+
+
+def is_twse_holiday_today() -> bool:
+    """
+    查詢證交所官方「開休市日期」公告，判斷今天是否為國定假日等休市日
+    （不含週六日，週末已由 is_market_hours 的 weekday 判斷處理）。
+    查詢失敗時採保守做法：視為非假日，不阻擋監控（避免因查詢問題整個停擺）。
+    """
+    now = datetime.now(TW_TZ)
+    roc_year = now.year - 1911
+
+    if roc_year in _holiday_cache:
+        holidays = _holiday_cache[roc_year]
+    else:
+        try:
+            url = f"https://www.twse.com.tw/holidaySchedule/holidaySchedule?response=csv&queryYear={roc_year}"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw = resp.read()
+            text = raw.decode("cp950", errors="ignore")
+            holidays = set()
+            for line in text.splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    row = next(csv.reader([line]))
+                except Exception:
+                    continue
+                if not row:
+                    continue
+                m = re.search(r"(\d{1,2})\s*月\s*(\d{1,2})\s*日", row[0])
+                if m:
+                    holidays.add((int(m.group(1)), int(m.group(2))))
+            _holiday_cache[roc_year] = holidays
+            print(f"已取得 {roc_year} 年證交所休市日清單，共 {len(holidays)} 天。")
+        except Exception as e:
+            print(f"查詢證交所休市日清單失敗，暫不視為假日：{e}")
+            return False
+
+    return (now.month, now.day) in holidays
+
+
 def reset_daily_acknowledgements(state: dict):
     """
     換了新的一天就把所有股票的確認狀態重置，
@@ -435,11 +495,13 @@ def main():
             report = f"分析「{raw_code}」時發生錯誤：{e}"
         send_telegram(bot_token, chat_id, report)
 
-    # 處理到價監控（沒設定 CSV 連結就跳過這部分）
-    if csv_url:
-        run_price_alerts(bot_token, chat_id, csv_url, state)
-    else:
+    # 處理到價監控（沒設定 CSV 連結就跳過；非開盤時段也跳過，避免產生雜訊）
+    if not csv_url:
         print("未設定 STOCKS_CSV_URL，略過到價監控。")
+    elif not is_market_hours():
+        print("目前非台股開盤時段（平日09:00-13:30），略過到價監控。")
+    else:
+        run_price_alerts(bot_token, chat_id, csv_url, state)
 
     save_state(state)
 
