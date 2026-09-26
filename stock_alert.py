@@ -21,6 +21,7 @@ import csv
 import io
 import urllib.request
 import numpy as np
+from datetime import datetime, timezone, timedelta
 
 try:
     import yfinance as yf
@@ -373,6 +374,28 @@ def build_analysis_report(raw_code: str) -> str:
     return "\n".join(lines)
 
 
+TW_TZ = timezone(timedelta(hours=8))
+
+
+def taiwan_today_str() -> str:
+    return datetime.now(TW_TZ).strftime("%Y-%m-%d")
+
+
+def reset_daily_acknowledgements(state: dict):
+    """
+    換了新的一天就把所有股票的確認狀態重置，
+    這樣如果股價還是持續停在目標之外，隔天還是會重新提醒你一次，
+    不會因為前一天回過「謝謝」就永遠不再通知。
+    """
+    today = taiwan_today_str()
+    if state.get("last_reset_date") != today:
+        for code, st in state.get("stocks", {}).items():
+            st["acknowledged_above"] = False
+            st["acknowledged_below"] = False
+        state["last_reset_date"] = today
+        print(f"已跨日（{today}），所有股票的確認狀態已重置。")
+
+
 # ========== 主流程 ==========
 
 def main():
@@ -382,6 +405,7 @@ def main():
 
     state = load_state()
     state.setdefault("stocks", {})
+    reset_daily_acknowledgements(state)
 
     updates = fetch_telegram_updates(bot_token, state.get("last_update_id", 0))
     analyze_requests = []
