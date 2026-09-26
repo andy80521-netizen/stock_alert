@@ -4,7 +4,8 @@
   "stocks": {
     "00712": {
       "acknowledged_above": false,
-      "acknowledged_below": true
+      "acknowledged_below": false
     }
-  }
+  },
+  "last_reset_date": "2026-09-26"
 }
