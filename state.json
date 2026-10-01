@@ -9,6 +9,14 @@
     "00878": {
       "acknowledged_above": false,
       "acknowledged_below": false
+    },
+    "00919": {
+      "acknowledged_above": false,
+      "acknowledged_below": false
+    },
+    "0056": {
+      "acknowledged_above": false,
+      "acknowledged_below": false
     }
   },
   "last_reset_date": "2026-10-01"
