@@ -1,0 +1,50 @@
+name: 黑五優惠每日蒐集
+
+on:
+  workflow_dispatch: {}   # 由 cron-job.org 每天觸發（建議雪梨時間 08:00 與 20:00）
+
+permissions:
+  contents: write   # 把 blackfriday/seen.json（去重紀錄）commit 回 repo
+
+concurrency:
+  group: stock-alert-run   # 與台股提醒共用同一組，避免兩個流程同時 push 互搶
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 簽出程式碼
+        uses: actions/checkout@v4
+
+      - name: 設定 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 測試
+        working-directory: blackfriday
+        run: python -m unittest -v
+
+      - name: 蒐集並推播
+        working-directory: blackfriday
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          MAX_PRICE: "1000"
+          END_DATE: "2026-12-01"
+        run: python bf_collector.py
+
+      - name: 儲存去重紀錄
+        run: |
+          git config user.name "stock-alert-bot"
+          git config user.email "actions@github.com"
+          if [ -n "$(git status --porcelain blackfriday/seen.json)" ]; then
+            git add blackfriday/seen.json
+            git commit -m "黑五蒐集：更新去重紀錄"
+            git pull --rebase origin main
+            git push
+          else
+            echo "去重紀錄無變化。"
+          fi
