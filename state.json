@@ -1,22 +1,22 @@
 {
-  "last_update_id": 73187574,
+  "last_update_id": 73187577,
   "acknowledged": false,
   "stocks": {
     "00712": {
       "acknowledged_above": false,
-      "acknowledged_below": false
+      "acknowledged_below": true
     },
     "00878": {
-      "acknowledged_above": false,
-      "acknowledged_below": false
+      "acknowledged_above": true,
+      "acknowledged_below": true
     },
     "00919": {
       "acknowledged_above": false,
       "acknowledged_below": false
     },
     "0056": {
-      "acknowledged_above": false,
-      "acknowledged_below": false
+      "acknowledged_above": true,
+      "acknowledged_below": true
     }
   },
   "last_reset_date": "2026-11-24"
